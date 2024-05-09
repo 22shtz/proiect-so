@@ -229,12 +229,15 @@ int main(int argc, char *argv[]) {
 
             pid_t pid = fork();
             if (pid == 0) { // Child process
+            	update_snapshots(output_dir2, output_dir2, &input_dirs[0], num_dirs); // Update snapshots only in output_dir2
+            	ok=0;
+            	compare_directories(output_dir,output_dir2,&ok);
+            	printf("\n");
+            	printf("%d\n",ok);
 		if(ok==1){
 		  update_snapshots(output_dir, output_dir2, &input_dirs[0], num_dirs);
 		}
-		else{
-		  update_snapshots(output_dir2, output_dir2, &input_dirs[0], num_dirs); // Update snapshots only in output_dir2
-		}
+		
                 exit(EXIT_SUCCESS);
             } else if (pid < 0) { // Fork failed
                 perror("Error child process");
@@ -254,12 +257,10 @@ int main(int argc, char *argv[]) {
 
     compare_directories(output_dir,output_dir2,&ok);
     printf("ok value after update: %d\n", ok);
-    ///practic compara mereu la urmatoarea rulare daca in pasul anterior s a int cwva
-    //e nevoie de 3 rulari sa se modifice
-    // 00 01 11 00
+    ///practic compara mereu dupa updatarea fisierului directorului out2 ok se face 1 daca exista modific si in acest caz se modifica si dir out1
+    
     return EXIT_SUCCESS;
 }
-
 
 
 
