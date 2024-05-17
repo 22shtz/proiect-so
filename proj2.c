@@ -7,54 +7,130 @@
 #include <string.h>
 #include <stdbool.h>
 #include <time.h>
+#include <fcntl.h>
 
 #define MAX_DIRS 100
 #define MAX_PATH_LEN 1024
+#define MAX_PATHL 500
 
+void mutaFisierInFolder(const char *absPath, const char *numeFis, const char *numeDir) {
+    char pathToDir[MAX_PATHL];
+    sprintf(pathToDir, "%s/%s", numeDir, numeFis);
 
-// Funcție pentru a compara conținutul a două fișiere
-void compare_files(const char *file1_path, const char *file2_path, int* ok) {
-    FILE *file1 = fopen(file1_path, "r");
-    FILE *file2 = fopen(file2_path, "r");
+    if (rename(absPath, pathToDir) == 0) {
+        printf("Fisier mutat cu succes.\n");
+    } else {
+        perror("Eroare la mutarea fisierului ");
+    }
+}
 
-    if (file1 == NULL || file2 == NULL) {
-        perror("fopen");
+/////functie drepturi
+void check_file_permissions(const char *file_path, const char *dir_out) {
+    // Verificăm permisiunile fișierului
+    
+    struct stat file_stat;
+    if (stat(file_path, &file_stat) == -1) {
+        perror("stat");
         return;
     }
 
-    char line1[MAX_PATH_LEN];
-    char line2[MAX_PATH_LEN];
+    // Verificăm dacă fișierul nu are nicio permisiune
+    if ((file_stat.st_mode & (S_IRWXU | S_IRWXG | S_IRWXO)) == 0) {
+    	printf("am gasit fisier fara drepturi\n");
+        // Dăm drept de citire fișierului
+        if (chmod(file_path, S_IRUSR | S_IRGRP | S_IROTH) == -1) {
+            perror("chmod");
+            return;
+        }
+
+        // Creăm un pipe
+        int pipefd[2];
+        if (pipe(pipefd) == -1) {
+            perror("pipe");
+            return;
+        }
+
+        // Creăm un proces copil
+        pid_t pid = fork();
+        if (pid == -1) {
+            perror("fork");
+            return;
+        }
+
+        if (pid == 0) { // Suntem în procesul copil
+            // Redirecționăm stdout către capătul de scriere al pipe-ului
+            close(pipefd[0]);
+            dup2(pipefd[1], STDOUT_FILENO);
+            close(pipefd[1]);
+
+            // Rulăm scriptul verify_script.sh cu calea către fișier ca argument
+            execlp("sh", "sh", "verify_script.sh", file_path, (char *)NULL);
+
+            perror("execlp");
+            exit(EXIT_FAILURE);
+        } else { // Suntem în procesul părinte
+            close(pipefd[1]); // Închidem capătul de scriere al pipe-ului în procesul părinte
+
+            // Citim rezultatul din pipe
+            char buffer[1024];
+            
+            ssize_t bytes_read = read(pipefd[0], buffer, sizeof(buffer));
+            close(pipefd[0]); // Închidem capătul de citire al pipe-ului în procesul părinte
+
+            // Convertim rezultatul la întreg
+            //int result = atoi(buffer);
+            
+
+            // Verificăm rezultatul și mutăm fișierul în directorul "dir_out" dacă este cazul
+            if (chmod(file_path, S_IRUSR & ~S_IRUSR) == -1) {
+        		perror("chmod");
+        		exit(EXIT_FAILURE);
+    		}
+            
+            if( strcmp(buffer , "SAFE\n") != 0){
+            	// Eliminăm dreptul de citire al fișierului
+		if (chmod(file_path, S_IRUSR & ~S_IRUSR) == -1) {
+    			perror("chmod");
+    			exit(EXIT_FAILURE);
+		}
+
+                mutaFisierInFolder(file_path, strrchr(file_path, '/') + 1, dir_out);
+                perror("Eroare la mutarea fisierului ");
+            }
+        }
+    }
+}
+// Funcție pentru a compara conținutul a două fișiere
+void compare_files(const char *file1_path, const char *file2_path, int *ok) {
+    int file1 = open(file1_path, O_RDONLY);
+    int file2 = open(file2_path, O_RDONLY);
+
+    if (file1 == -1 || file2 == -1) {
+        perror("open");
+        return;
+    }
+
+    char buf1[MAX_PATH_LEN];
+    char buf2[MAX_PATH_LEN];
     int line_number = 1;
 
-    while (fgets(line1, sizeof(line1), file1) != NULL && fgets(line2, sizeof(line2), file2) != NULL) {
-        if (strcmp(line1, line2) != 0) {
+    ssize_t bytes_read1, bytes_read2;
+    while ((bytes_read1 = read(file1, buf1, sizeof(buf1))) > 0 &&
+           (bytes_read2 = read(file2, buf2, sizeof(buf2))) > 0) {
+        if (bytes_read1 != bytes_read2 || memcmp(buf1, buf2, bytes_read1) != 0) {
             printf("Difference found at line %d:\n", line_number);
-            printf("%s:\n%s", file1_path, line1);
-            printf("%s:\n%s", file2_path, line2);
-	    *ok=1;
+            *ok = 1;
+            break;
         }
         line_number++;
     }
 
-    // Verificăm dacă unul dintre fișiere are mai multe linii decât celălalt
-    if (fgets(line1, sizeof(line1), file1) != NULL) {
-        printf("Extra lines found in %s:\n", file1_path);
-        while (fgets(line1, sizeof(line1), file1) != NULL) {
-            printf("%s", line1);
-        }
-    } else if (fgets(line2, sizeof(line2), file2) != NULL) {
-        printf("Extra lines found in %s:\n", file2_path);
-        while (fgets(line2, sizeof(line2), file2) != NULL) {
-            printf("%s", line2);
-        }
-    }
-
-    fclose(file1);
-    fclose(file2);
+    close(file1);
+    close(file2);
 }
 
 // Funcție pentru a compara conținutul a două directoare
-void compare_directories(const char *dir1_path, const char *dir2_path, int* ok) {
+void compare_directories(const char *dir1_path, const char *dir2_path, int *ok) {
     DIR *dir1 = opendir(dir1_path);
     DIR *dir2 = opendir(dir2_path);
 
@@ -77,16 +153,14 @@ void compare_directories(const char *dir1_path, const char *dir2_path, int* ok) 
         snprintf(file1_path, sizeof(file1_path), "%s/%s", dir1_path, entry1->d_name);
         snprintf(file2_path, sizeof(file2_path), "%s/%s", dir2_path, entry2->d_name);
 
-        compare_files(file1_path, file2_path,ok);
+        compare_files(file1_path, file2_path, ok);
     }
 
     closedir(dir1);
     closedir(dir2);
 }
 
-
-
-char* generate_snapshot_filename(const char *output_dir, int dir_index) {
+char *generate_snapshot_filename(const char *output_dir, int dir_index) {
     time_t t = time(NULL);
     struct tm tm = *localtime(&t);
     char *snapshot_filename = malloc(MAX_PATH_LEN);
@@ -109,17 +183,17 @@ void update_snapshots(const char *output_dir, const char *output_dir2, const cha
         snprintf(snapshot_path, sizeof(snapshot_path), "%s/snapshot_%d.txt", output_dir, i + 1);
         snprintf(snapshot_path2, sizeof(snapshot_path2), "%s/snapshot_%d.txt", output_dir2, i + 1);
 
-        FILE *snapshot_file = fopen(snapshot_path, "w");
-        FILE *snapshot_file2 = fopen(snapshot_path2, "w"); // Deschidem în modul "w" pentru a suprascrie întregul conținut la fiecare rulare
+        int snapshot_file = open(snapshot_path, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
+        int snapshot_file2 = open(snapshot_path2, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
 
-        if (snapshot_file == NULL || snapshot_file2 == NULL) {
-            perror("fopen");
+        if (snapshot_file == -1 || snapshot_file2 == -1) {
+            perror("open");
             closedir(dir);
             continue;
         }
 
-        fprintf(snapshot_file, "Snapshot for directory: %s\n", input_dir);
-	fprintf(snapshot_file2, "Snapshot for directory: %s\n", input_dir);
+        dprintf(snapshot_file, "Snapshot for directory: %s\n", input_dir);
+        dprintf(snapshot_file2, "Snapshot for directory: %s\n", input_dir);
 
         struct dirent *entry;
         while ((entry = readdir(dir)) != NULL) {
@@ -136,20 +210,18 @@ void update_snapshots(const char *output_dir, const char *output_dir2, const cha
                 continue;
             }
 
-            fprintf(snapshot_file2, "Name: %s, Size: %ld bytes, Modified: %ld\n", entry->d_name,
+            dprintf(snapshot_file2, "Name: %s, Size: %ld bytes, Modified: %ld\n", entry->d_name,
                     (long)entry_stat.st_size, (long)entry_stat.st_mtime);
 
-	    fprintf(snapshot_file, "Name: %s, Size: %ld bytes, Modified: %ld\n", entry->d_name,
-        (long)entry_stat.st_size, (long)entry_stat.st_mtime);
-
+            dprintf(snapshot_file, "Name: %s, Size: %ld bytes, Modified: %ld\n", entry->d_name,
+                    (long)entry_stat.st_size, (long)entry_stat.st_mtime);
         }
 
-        fclose(snapshot_file);
-        fclose(snapshot_file2);
+        close(snapshot_file);
+        close(snapshot_file2);
         closedir(dir);
     }
 }
-
 
 bool isDirectory(const char *path) {
     struct stat statbuf;
@@ -175,34 +247,76 @@ bool isFirstRun() {
 }
 
 int main(int argc, char *argv[]) {
-    if (argc < 4 || strcmp(argv[1], "-o") != 0) {
+    if (argc < 5 || strcmp(argv[1], "-o") != 0) {
         printf("Use: %s -o out1 out2 directory1 [directory2 ...]\n", argv[0]);
         exit(EXIT_FAILURE);
     }
 
     char output_dir[MAX_PATH_LEN];
     char output_dir2[MAX_PATH_LEN];
+    char dir_out[MAX_PATH_LEN];
     strcpy(output_dir, argv[2]);
     strcpy(output_dir2, argv[3]);
-    int ok=0;
+    strcpy(dir_out, argv[4]);
+    
+    int ok = 0;
 
-    //comparam modif si daca se gasesc se face ok 1 si se vor modifica ambele foldere
-    compare_directories(output_dir,output_dir2,&ok);
-    printf("ok value before forking: %d\n", ok);
+    // Comparăm modificările și dacă se găsesc, ok devine 1 și se vor modifica ambele foldere
+
 
     const char *input_dirs[MAX_DIRS];
-    int num_dirs = argc - 4;
+    int num_dirs = argc - 5;
     if (num_dirs > MAX_DIRS) {
         printf("Too many directories specified\n");
         exit(EXIT_FAILURE);
     }
 
     for (int i = 0; i < num_dirs; i++) {
-        input_dirs[i] = argv[i + 4];
+        input_dirs[i] = argv[i + 5];
+    }
+////////////////////////mal
+for (int i = 0; i < num_dirs; i++) {
+    const char *dir_path = input_dirs[i];
+
+    // Verificăm dacă este un director
+    struct stat dir_stat;
+    if (stat(dir_path, &dir_stat) == -1) {
+        perror("stat");
+        continue;
     }
 
-    ///daca e prima rulare se vor modifica ambele foldere, altfel se va modifica doar al 2 lea
-    
+    if (!S_ISDIR(dir_stat.st_mode)) {
+        printf("Ignore non-directory argument: %s\n", dir_path);
+        continue;
+    }
+
+    // Verificăm fișierele din director
+    DIR *dir = opendir(dir_path);
+    if (dir == NULL) {
+        perror("opendir");
+        continue;
+    }
+
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+
+        char file_path[MAX_PATH_LEN];
+        snprintf(file_path, sizeof(file_path), "%s/%s", dir_path, entry->d_name);
+
+        // Verificăm permisiunile fișierului
+        check_file_permissions(file_path, argv[4]);
+
+        
+    }
+
+    closedir(dir);
+}
+
+
+    /// Dacă e prima rulare, se vor modifica ambele foldere, altfel se va modifica doar al 2-lea
     if (isFirstRun()) {
         for (int i = 0; i < num_dirs; i++) {
             if (!isDirectory(input_dirs[i])) {
@@ -211,11 +325,10 @@ int main(int argc, char *argv[]) {
             }
 
             pid_t pid = fork();
-            if (pid == 0) { // Child process
-                update_snapshots(output_dir, output_dir2, &input_dirs[0], num_dirs); // Update snapshots for all directories
-        
+            if (pid == 0) { // Proces copil
+                update_snapshots(output_dir, output_dir2, &input_dirs[0], num_dirs); // Actualizăm instantaneele pentru toate directoarele
                 exit(EXIT_SUCCESS);
-            } else if (pid < 0) { // Fork failed
+            } else if (pid < 0) { // Eșec la bifare
                 perror("Error child process");
                 exit(EXIT_FAILURE);
             }
@@ -228,39 +341,36 @@ int main(int argc, char *argv[]) {
             }
 
             pid_t pid = fork();
-            if (pid == 0) { // Child process
-            	update_snapshots(output_dir2, output_dir2, &input_dirs[0], num_dirs); // Update snapshots only in output_dir2
-            	ok=0;
-            	compare_directories(output_dir,output_dir2,&ok);
-            	printf("\n");
-            	printf("%d\n",ok);
-		if(ok==1){
-		  update_snapshots(output_dir, output_dir2, &input_dirs[0], num_dirs);
-		}
-		
+            if (pid == 0) { // Proces copil
+                update_snapshots(output_dir2, output_dir2, &input_dirs[0], num_dirs); // Actualizăm instantaneele doar în output_dir2
+                ok = 0;
+                compare_directories(output_dir, output_dir2, &ok);
+                //printf("\n");
+                //printf("%d\n", ok);
+                if (ok == 1) {
+                    update_snapshots(output_dir, output_dir2, &input_dirs[0], num_dirs);
+                }
                 exit(EXIT_SUCCESS);
-            } else if (pid < 0) { // Fork failed
+            } else if (pid < 0) { // Eșec la bifare
                 perror("Error child process");
                 exit(EXIT_FAILURE);
             }
         }
     }
+    
 
-    // Parent process
-    int status;
-    pid_t pid;
-    while ((pid = wait(&status)) > 0) { 
+    // Proces părinte
+int status;
+pid_t pid;
+while ((pid = wait(&status)) > 0) { 
         if (WIFEXITED(status)) {
             printf("The process with PID %d has ended with code %d.\n", pid, WEXITSTATUS(status));
         }
     }
 
-    compare_directories(output_dir,output_dir2,&ok);
-    printf("ok value after update: %d\n", ok);
-    ///practic compara mereu dupa updatarea fisierului directorului out2 ok se face 1 daca exista modific si in acest caz se modifica si dir out1
-    
+
+    // Practic, compară mereu după actualizarea fișierului directorului out2; ok devine 1 dacă există modificări și în acest caz se modifică și dir out1
+
     return EXIT_SUCCESS;
 }
-
-
 
